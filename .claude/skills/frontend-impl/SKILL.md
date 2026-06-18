@@ -299,46 +299,6 @@ undoToast('Nach „Fertig" verschoben', () => {
 
 ---
 
-## Multi-Entity Topologies
-
-Read the schema's applookup graph before composing. The shape decides the layout.
-
-### Hub-and-spoke (many entities → one central entity)
-Symptom: 3+ entities each carry an applookup pointing at the SAME entity (Baustelle ← Mängel/Berichte/Fotos/Genehmigungen/Kontakte). The central entity is the hub; the rest are its satellites.
-
-The schema already names the hub and its satellites for you: **`HUB_TOPOLOGY` in `@/types/app`** maps each hub key to `[{ field, entity }]` for every satellite. Read it first — don't infer the graph by hand. The build gate `check-hub.mjs` fails if you skip a satellite.
-
-- **Primary surface = the hub** as cockpit cards. Each card carries its SATELLITE DENSITY so the relationship is visible before the click: `{maengelVon(b.id).length} Mängel`, an expiring-permit chip, `{berichteVon(b.id).length} Ber.`. A typed `useState` per satellite + a `xVon = (id) => x.filter(r => parentId(r) === id)` helper each.
-- **The hub overlay shows ALL satellites via `<SatelliteSection>`** (pre-generated, `@/components/SatelliteSection`) — render ONE per entry in `HUB_TOPOLOGY[hubKey]`. The component bakes in the three mechanics that are easy to get wrong by hand, so they're guaranteed: it always renders the "+" (the `onAdd` prop is required), a row click fires `onOpen` (→ `overlay.push` the DETAIL, never the edit form), and the header-count + relation-list + dashed-add layout is consistent.
-  ```tsx
-  <SatelliteSection
-    title="Mängel"
-    items={maengelVon(b.record_id)}
-    getKey={m => m.record_id}
-    map={m => ({ label: `${PRIO[m.fields.prio]} · ${STATUS[m.fields.status]}`, name: m.fields.typ, meta: m.fields.beschreibung, icon: IconAlertTriangle })}
-    onOpen={m => overlay.push({ typ: 'mangel', id: m.record_id })}   // DETAIL — not the edit form
-    onAdd={() => openCreate('maengelerfassung', b.record_id)}        // the "+", hub pre-set
-  />
-  ```
-  The overlay-stack item is a union: `useRecordOverlayStack<{ typ: 'baustelle'|'mangel'|'ve'|…; id: string }>()`. A satellite drill is a `push`; each satellite-detail offers a `<RecordRelation>` back to its hub (`push({typ:'baustelle', …})`). `openCreate(entity, hubId)` opens that entity's `<{Entity}Dialog>` with the hub field pre-set (`defaultValues={{ baustelle: createRecordUrl(APP_IDS.BAUSTELLEN, hubId) }}`) — the relation is fixed by context, no applookup picker. After submit: `fetchAll()` (or optimistic prepend) + undoToast; the overlay stays open on the hub.
-- **Cover EVERY satellite in `HUB_TOPOLOGY`, not just the obvious ones.** Loop history: wiring only Mängel → the user immediately notices "I can only add defects"; wiring a row click to the edit dialog → "the dialog that opens doesn't fit". `SatelliteSection` + `HUB_TOPOLOGY` + `check-hub.mjs` make both impossible — but you must still render the section for every entry. Import the create dialog for ALL satellite entities (Mängel AND VE AND Fotos AND Kommunikation AND Checklisten AND Leitungen).
-- **Cross-entity signal → hero.** Compute the urgent state ACROSS satellites (a permit expiring in ≤7 days, a critical Mangel) and raise it as the `<HeroBanner>` with a resolving action. The hub's own status is rarely the hero.
-- HARD: never leave satellites as isolated CRUD pages. A hub detail showing only its own fields is the failure this pattern exists to prevent.
-
-### Chain/pipeline (each entity → its predecessor)
-Symptom: entities point at the PREVIOUS one in a sequence (Anfrage→Angebot→Auftrag→Rechnung). Don't render N kanbans — track ONE Vorgang through the stages.
-- Build the chain per root: `const auftrag = auftragVon(angebot?.id)` … derive `stand` = furthest stage reached.
-- Primary = Vorgang list, each row a mini-stepper (filled dots up to `stand`) + value, not four tables.
-- The defining action is CONVERT: advancing a stage CREATES + links the next record (`nimmAngebotAn` sets status + pushes a new Auftrag with `angebotId`). Optimistic + undo.
-- Stalls are the signal: finished-but-unbilled = money on the street → hero. KPIs count value per stage.
-- Vorgang overlay = the chain as `<RecordTimeline>` (only reached stages), next conversion as the footer button.
-
-### Pair (two entities, one applookup) — see the Kunden&Aufträge idiom above: enrichment shows the parent on every child; overlay-stack drills child→parent→back.
-
-### Flat/independent — no strong links; compose per the single-entity rules, don't force a drill.
-
----
-
 ## Design Principles
 
 ### Theme

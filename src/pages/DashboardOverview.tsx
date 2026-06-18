@@ -5,7 +5,11 @@ import type { Objekte } from '@/types/app';
 import { APP_IDS, LOOKUP_OPTIONS } from '@/types/app';
 import { LivingAppsService, extractRecordId, createRecordUrl } from '@/services/livingAppsService';
 import { formatCurrency, formatDate, formatDateTime, lookupKey } from '@/lib/formatters';
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+  DialogDescription, DialogFooter,
+} from '@/components/ui/dialog';
 import { format, parseISO, isToday, isBefore, startOfDay, addDays } from 'date-fns';
 import { de } from 'date-fns/locale';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -39,13 +43,77 @@ import {
   RecordAttachments,
   useRecordOverlayStack,
 } from '@/components/widgets/RecordView';
+import {
+  MediaThumbnail,
+  MediaLightbox,
+  useMediaViewer,
+} from '@/components/widgets/MediaViewer';
 import { ObjekteDialog } from '@/components/dialogs/ObjekteDialog';
 import { InteressentenDialog } from '@/components/dialogs/InteressentenDialog';
 import { BesichtigungenDialog } from '@/components/dialogs/BesichtigungenDialog';
 import { AI_PHOTO_SCAN, AI_PHOTO_LOCATION } from '@/config/ai-features';
+import 'leaflet/dist/leaflet.css';
+import L from 'leaflet';
+import { MapContainer, TileLayer, Marker, useMap } from 'react-leaflet';
 
 const APPGROUP_ID = '6a33f590750aef3cdbfb1348';
 const REPAIR_ENDPOINT = '/claude/build/repair';
+
+// ── Leaflet marker icon fix (Vite doesn't bundle default asset URLs) ─────────
+delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
+
+function createPinIcon(color: string) {
+  return L.divIcon({
+    html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 36" width="28" height="40">
+      <path fill="${color}" stroke="white" stroke-width="1.5"
+        d="M12 1C7.03 1 3 5.03 3 10c0 6.6 9 23 9 23S21 16.6 21 10c0-4.97-4.03-9-9-9z"/>
+      <circle fill="white" cx="12" cy="10" r="3.5"/>
+    </svg>`,
+    className: '',
+    iconSize: [28, 40],
+    iconAnchor: [14, 40],
+    popupAnchor: [0, -40],
+  });
+}
+
+function statusPinColor(key: string | undefined) {
+  if (key === 'verfuegbar') return '#16a34a';
+  if (key === 'reserviert') return '#d97706';
+  return '#6b7280';
+}
+
+// ── Geocoding via Nominatim (free, no API key, rate-limited to 1 req/s) ──────
+const GEOCODE_CACHE = new Map<string, [number, number] | null>();
+
+async function geocodeAddress(addr: string): Promise<[number, number] | null> {
+  if (GEOCODE_CACHE.has(addr)) return GEOCODE_CACHE.get(addr) ?? null;
+  try {
+    const r = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(addr)}`,
+      { headers: { 'Accept-Language': 'de', 'User-Agent': 'LivingApps-Immobilien/1.0' } }
+    );
+    const data = await r.json();
+    const result: [number, number] | null = data[0]
+      ? [parseFloat(data[0].lat), parseFloat(data[0].lon)]
+      : null;
+    GEOCODE_CACHE.set(addr, result);
+    return result;
+  } catch {
+    GEOCODE_CACHE.set(addr, null);
+    return null;
+  }
+}
+
+// ── FitBounds: passt die Kartenansicht an alle Marker an ─────────────────────
+function MapFitBounds({ coords }: { coords: [number, number][] }) {
+  const map = useMap();
+  useEffect(() => {
+    if (coords.length === 0) return;
+    if (coords.length === 1) { map.setView(coords[0], 15); return; }
+    map.fitBounds(coords as L.LatLngBoundsExpression, { padding: [48, 48], maxZoom: 16 });
+  }, [map, coords.map(c => c.join(',')).join('|')]);
+  return null;
+}
 
 // ── Kanban columns for Interessenten pipeline ────────────────────────────────
 const INTERESSENTEN_COLUMNS: KanbanColumn[] = (
@@ -105,6 +173,12 @@ export default function DashboardOverview() {
   const [editBesichtigung, setEditBesichtigung] = useState<EnrichedBesichtigungen | null>(null);
 
   const overlay = useRecordOverlayStack<OverlayItem>();
+  const mediaViewer = useMediaViewer();
+
+  // Discard-Bestätigung für ObjekteDialog (Edit-Modus)
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+  const objektDialogDirtyRef = useRef(false);
+  const objektDialogSavedRef = useRef(false);
 
   // ── Derived data ──────────────────────────────────────────────────────────
   const todayKey = format(clock, 'yyyy-MM-dd');
@@ -239,6 +313,34 @@ export default function DashboardOverview() {
     setBesichtigungDialog(true);
   }, []);
 
+  // ObjekteDialog-Close mit Discard-Bestätigung
+  const handleObjektDialogClose = useCallback(() => {
+    if (objektDialogSavedRef.current) {
+      objektDialogSavedRef.current = false;
+      objektDialogDirtyRef.current = false;
+      setObjektDialog(false);
+      setEditObjekt(null);
+      return;
+    }
+    if (objektDialogDirtyRef.current) {
+      setDiscardConfirmOpen(true);
+      return;
+    }
+    objektDialogDirtyRef.current = false;
+    setObjektDialog(false);
+    setEditObjekt(null);
+  }, []);
+
+  const handleObjektDialogSubmit = useCallback(async (fields: Objekte['fields']) => {
+    objektDialogSavedRef.current = true;
+    if (editObjekt) {
+      await LivingAppsService.updateObjekteEntry(editObjekt.record_id, fields);
+    } else {
+      await LivingAppsService.createObjekteEntry(fields);
+    }
+    fetchAll();
+  }, [editObjekt, fetchAll]);
+
   // ── WorkList items for today / upcoming ───────────────────────────────────
   const worklistItems = useMemo(() => {
     const items = heuteBesichtigungen.length > 0 ? heuteBesichtigungen : enrichedBesichtigungen
@@ -372,7 +474,7 @@ export default function DashboardOverview() {
           <p className="text-muted-foreground text-sm mt-1 truncate">{contextLine}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <Button variant="outline" size="sm" onClick={() => setObjektDialog(true)}>
+          <Button variant="outline" size="sm" onClick={() => { objektDialogDirtyRef.current = false; objektDialogSavedRef.current = false; setObjektDialog(true); }}>
             <IconPlus size={14} className="mr-1.5 shrink-0" />
             <span className="hidden sm:inline">Objekt</span>
             <span className="sm:hidden">Objekt</span>
@@ -468,6 +570,22 @@ export default function DashboardOverview() {
 
         primary={
           <div className="space-y-6">
+            {/* Objekte Karte */}
+            {objekte.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <IconMapPin size={14} className="shrink-0 text-muted-foreground" />
+                  <span className="text-sm font-semibold">
+                    Standorte{kpiFilter === 'verfuegbar' ? ' — Verfügbare Objekte' : ''}
+                  </span>
+                </div>
+                <ObjekteMap
+                  objekte={kpiFilter === 'verfuegbar' ? verfuegbareObjekte : objekte}
+                  onMarkerClick={id => overlay.replace({ type: 'objekt', id })}
+                />
+              </div>
+            )}
+
             {/* Kalender der Besichtigungen */}
             <CalendarWidget
               events={calendarEvents}
@@ -507,21 +625,29 @@ export default function DashboardOverview() {
       />
 
       {/* ── Dialoge ─────────────────────────────────────────────────────── */}
-      <ObjekteDialog
-        open={objektDialog || !!editObjekt}
-        onClose={() => { setObjektDialog(false); setEditObjekt(null); }}
-        onSubmit={async (fields) => {
-          if (editObjekt) {
-            await LivingAppsService.updateObjekteEntry(editObjekt.record_id, fields);
-          } else {
-            await LivingAppsService.createObjekteEntry(fields);
-          }
-          fetchAll();
+      {/* onChange bubbles from all inputs/textareas inside → dirty detection */}
+      <div onChange={() => { objektDialogDirtyRef.current = true; }}>
+        <ObjekteDialog
+          open={objektDialog || !!editObjekt}
+          onClose={handleObjektDialogClose}
+          onSubmit={handleObjektDialogSubmit}
+          defaultValues={editObjekt?.fields}
+          recordId={editObjekt?.record_id}
+          enablePhotoScan={AI_PHOTO_SCAN['Objekte']}
+          enablePhotoLocation={AI_PHOTO_LOCATION['Objekte']}
+        />
+      </div>
+
+      {/* Discard-Bestätigung — kommt nach ObjekteDialog → liegt im DOM dahinter und erscheint oben */}
+      <DiscardConfirmDialog
+        open={discardConfirmOpen}
+        onClose={() => setDiscardConfirmOpen(false)}
+        onConfirm={() => {
+          setDiscardConfirmOpen(false);
+          objektDialogDirtyRef.current = false;
+          setObjektDialog(false);
+          setEditObjekt(null);
         }}
-        defaultValues={editObjekt?.fields}
-        recordId={editObjekt?.record_id}
-        enablePhotoScan={AI_PHOTO_SCAN['Objekte']}
-        enablePhotoLocation={AI_PHOTO_LOCATION['Objekte']}
       />
 
       <InteressentenDialog
@@ -569,7 +695,14 @@ export default function DashboardOverview() {
         onClose={overlay.close}
         onBack={overlay.canGoBack ? overlay.pop : undefined}
         size="lg"
-        onEdit={() => { if (overlayObjekt) { setEditObjekt(overlayObjekt); overlay.close(); } }}
+        onEdit={() => {
+          if (overlayObjekt) {
+            objektDialogDirtyRef.current = false;
+            objektDialogSavedRef.current = false;
+            setEditObjekt(overlayObjekt);
+            // Dialog öffnet sich ÜBER dem Overlay — kein close()
+          }
+        }}
         footer={
           overlayObjekt && (
             <div className="flex items-center gap-2">
@@ -608,79 +741,148 @@ export default function DashboardOverview() {
         }
       >
         {overlayObjekt && (
-          <>
-            <RecordHeader
-              title={overlayObjekt.fields.titel || '(Kein Titel)'}
-              subtitle={overlayObjekt.fields.adresse}
-              badges={
-                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                  lookupKey(overlayObjekt.fields.status) === 'verfuegbar' ? 'bg-green-100 text-green-700' :
-                  lookupKey(overlayObjekt.fields.status) === 'reserviert' ? 'bg-amber-100 text-amber-700' :
-                  'bg-muted text-muted-foreground'
-                }`}>
-                  {overlayObjekt.fields.status?.label ?? '—'}
-                </span>
-              }
-            />
-            <RecordSection cols={2}>
-              <RecordField label="Preis" value={overlayObjekt.fields.preis} format="currency" />
-              <RecordField label="Verfügbar ab" value={overlayObjekt.fields.verfuegbar_ab} format="date" />
-              <RecordField label="Adresse" value={overlayObjekt.fields.adresse} />
-              <RecordField label="Status" value={overlayObjekt.fields.status?.label} />
-            </RecordSection>
-            {overlayObjekt.fields.beschreibung && (
-              <RecordSection title="Beschreibung">
-                <RecordField label="" value={overlayObjekt.fields.beschreibung} format="longtext" />
+          <div className="xl:grid xl:grid-cols-[1fr_252px] xl:gap-6 xl:items-start">
+            {/* Hauptinhalt */}
+            <div>
+              <RecordHeader
+                title={overlayObjekt.fields.titel || '(Kein Titel)'}
+                subtitle={overlayObjekt.fields.adresse}
+                badges={
+                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                    lookupKey(overlayObjekt.fields.status) === 'verfuegbar' ? 'bg-green-100 text-green-700' :
+                    lookupKey(overlayObjekt.fields.status) === 'reserviert' ? 'bg-amber-100 text-amber-700' :
+                    'bg-muted text-muted-foreground'
+                  }`}>
+                    {overlayObjekt.fields.status?.label ?? '—'}
+                  </span>
+                }
+              />
+              <RecordSection cols={2}>
+                <RecordField label="Preis" value={overlayObjekt.fields.preis} format="currency" />
+                <RecordField label="Verfügbar ab" value={overlayObjekt.fields.verfuegbar_ab} format="date" />
+                <RecordField label="Adresse" value={overlayObjekt.fields.adresse} />
+                <RecordField label="Status" value={overlayObjekt.fields.status?.label} />
               </RecordSection>
-            )}
-            {/* Interessenten */}
-            <RecordSection title={`Interessenten (${objektInteressenten.length})`} icon={IconUsers}>
-              {objektInteressenten.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Noch keine Interessenten zugeordnet.</p>
-              ) : (
-                <div className="space-y-1">
-                  {objektInteressenten.map(i => (
-                    <RecordRelation
-                      key={i.record_id}
-                      name={[i.fields.vorname, i.fields.nachname].filter(Boolean).join(' ') || '(Kein Name)'}
-                      meta={i.fields.status?.label}
-                      onClick={() => overlay.push({ type: 'interessent', id: i.record_id })}
-                    />
-                  ))}
-                </div>
+              {overlayObjekt.fields.beschreibung && (
+                <RecordSection title="Beschreibung">
+                  <RecordField label="" value={overlayObjekt.fields.beschreibung} format="longtext" />
+                </RecordSection>
               )}
-            </RecordSection>
-            {/* Besichtigungen */}
-            <RecordSection title={`Besichtigungen (${objektBesichtigungen.length})`} icon={IconCalendar}>
-              {objektBesichtigungen.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Noch keine Besichtigungen geplant.</p>
-              ) : (
-                <div className="space-y-1">
-                  {objektBesichtigungen
-                    .sort((a, b) => (a.fields.termin ?? '').localeCompare(b.fields.termin ?? ''))
-                    .map(b => (
-                      <RecordRelation
-                        key={b.record_id}
-                        name={b.interessentName || b.fields.titel || 'Besichtigung'}
-                        meta={formatDateTime(b.fields.termin)}
-                        onClick={() => overlay.push({ type: 'besichtigung', id: b.record_id })}
+              {/* Besichtigungen */}
+              <RecordSection title={`Besichtigungen (${objektBesichtigungen.length})`} icon={IconCalendar}>
+                {objektBesichtigungen.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Noch keine Besichtigungen geplant.</p>
+                ) : (
+                  <div className="space-y-1">
+                    {objektBesichtigungen
+                      .sort((a, b) => (a.fields.termin ?? '').localeCompare(b.fields.termin ?? ''))
+                      .map(b => (
+                        <RecordRelation
+                          key={b.record_id}
+                          name={b.interessentName || b.fields.titel || 'Besichtigung'}
+                          meta={formatDateTime(b.fields.termin)}
+                          onClick={() => overlay.push({ type: 'besichtigung', id: b.record_id })}
+                        />
+                      ))}
+                  </div>
+                )}
+              </RecordSection>
+              {/* Interessenten — auf kleinen Screens als Sektion, auf xl per rechtem Panel */}
+              <div className="xl:hidden">
+                <RecordSection title={`Interessenten (${objektInteressenten.length})`} icon={IconUsers}>
+                  {objektInteressenten.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Noch keine Interessenten zugeordnet.</p>
+                  ) : (
+                    <div className="space-y-1">
+                      {objektInteressenten.map(i => (
+                        <RecordRelation
+                          key={i.record_id}
+                          name={[i.fields.vorname, i.fields.nachname].filter(Boolean).join(' ') || '(Kein Name)'}
+                          meta={i.fields.status?.label}
+                          onClick={() => overlay.push({ type: 'interessent', id: i.record_id })}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </RecordSection>
+              </div>
+              {/* Fotos */}
+              {overlayObjekt.fields.fotos && (
+                <RecordSection title="Fotos" icon={IconPhoto}>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    <div className="relative aspect-square rounded-lg overflow-hidden">
+                      <MediaThumbnail
+                        src={overlayObjekt.fields.fotos}
+                        alt="Objektfoto"
+                        fit="cover"
+                        className="w-full h-full"
+                        onClick={() => mediaViewer.openWith(
+                          [{ url: overlayObjekt.fields.fotos!, title: overlayObjekt.fields.titel || 'Objektfoto' }],
+                          0
+                        )}
                       />
-                    ))}
-                </div>
+                    </div>
+                  </div>
+                </RecordSection>
               )}
-            </RecordSection>
-            {/* Fotos */}
-            {overlayObjekt.fields.fotos && (
-              <RecordSection title="Fotos" icon={IconPhoto}>
-                <img
-                  src={overlayObjekt.fields.fotos}
-                  alt="Objektfoto"
-                  className="rounded-lg object-cover w-full max-h-64"
-                />
-              </RecordSection>
-            )}
-            <RecordAttachments appId={APP_IDS.OBJEKTE} recordId={overlayObjekt.record_id} />
-          </>
+              <RecordAttachments appId={APP_IDS.OBJEKTE} recordId={overlayObjekt.record_id} />
+            </div>
+
+            {/* Interessenten Schnell-Panel (nur xl) */}
+            <div className="hidden xl:block sticky top-0">
+              <div className="bg-muted/40 rounded-xl p-4 space-y-2">
+                <div className="flex items-center justify-between pb-1">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <IconUsers size={14} className="shrink-0 text-muted-foreground" />
+                    <span className="font-semibold text-sm truncate">
+                      Interessenten ({objektInteressenten.length})
+                    </span>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 w-6 p-0 shrink-0"
+                    onClick={() => {
+                      setEditInteressent(null);
+                      setInteressentDialogStatus(undefined);
+                      setInteressentDialog(true);
+                    }}
+                    title="Interessent hinzufügen"
+                  >
+                    <IconPlus size={12} />
+                  </Button>
+                </div>
+                {objektInteressenten.length === 0 ? (
+                  <p className="text-xs text-muted-foreground text-center py-4">
+                    Noch keine Interessenten zugeordnet.
+                  </p>
+                ) : (
+                  <div className="space-y-0.5">
+                    {objektInteressenten.map(i => (
+                      <button
+                        key={i.record_id}
+                        onClick={() => overlay.push({ type: 'interessent', id: i.record_id })}
+                        className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-background/70 transition-colors"
+                      >
+                        <div className="text-sm font-medium truncate">
+                          {[i.fields.vorname, i.fields.nachname].filter(Boolean).join(' ') || '(Kein Name)'}
+                        </div>
+                        <span className={`text-xs font-medium ${
+                          lookupKey(i.fields.status) === 'angebot' ? 'text-green-600' :
+                          lookupKey(i.fields.status) === 'abgesagt' ? 'text-red-500' :
+                          lookupKey(i.fields.status) === 'besichtigung' ? 'text-blue-600' :
+                          lookupKey(i.fields.status) === 'neu' ? 'text-amber-600' :
+                          'text-muted-foreground'
+                        }`}>
+                          {i.fields.status?.label ?? '—'}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         )}
       </RecordOverlay>
 
@@ -773,6 +975,15 @@ export default function DashboardOverview() {
         )}
       </RecordOverlay>
 
+      {/* Foto-Vollbild-Lightbox */}
+      <MediaLightbox
+        open={mediaViewer.open}
+        items={mediaViewer.items}
+        index={mediaViewer.index}
+        onClose={mediaViewer.close}
+        onIndexChange={mediaViewer.setIndex}
+      />
+
       {/* Besichtigung-Detail-Overlay */}
       <RecordOverlay
         open={overlay.open && overlayItem?.type === 'besichtigung'}
@@ -799,11 +1010,20 @@ export default function DashboardOverview() {
             )}
             {overlayBesichtigung.fields.fotos && (
               <RecordSection title="Fotos" icon={IconPhoto}>
-                <img
-                  src={overlayBesichtigung.fields.fotos}
-                  alt="Besichtigungsfoto"
-                  className="rounded-lg object-cover w-full max-h-64"
-                />
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  <div className="relative aspect-square rounded-lg overflow-hidden">
+                    <MediaThumbnail
+                      src={overlayBesichtigung.fields.fotos}
+                      alt="Besichtigungsfoto"
+                      fit="cover"
+                      className="w-full h-full"
+                      onClick={() => mediaViewer.openWith(
+                        [{ url: overlayBesichtigung.fields.fotos!, title: overlayBesichtigung.objektName || 'Besichtigungsfoto' }],
+                        0
+                      )}
+                    />
+                  </div>
+                </div>
               </RecordSection>
             )}
             {overlayBesichtigung.objektName && (
@@ -823,6 +1043,136 @@ export default function DashboardOverview() {
         )}
       </RecordOverlay>
     </div>
+  );
+}
+
+// ── ObjekteMap: geocodiert Adressen und zeigt Marker ──────────────────────────
+interface ObjekteMapProps {
+  objekte: Objekte[];
+  onMarkerClick: (id: string) => void;
+}
+
+function ObjekteMap({ objekte, onMarkerClick }: ObjekteMapProps) {
+  const [coordMap, setCoordMap] = useState<Map<string, [number, number]>>(new Map());
+
+  useEffect(() => {
+    let cancelled = false;
+    const withAddress = objekte.filter(o => o.fields.adresse);
+    const todo = withAddress.filter(o => !GEOCODE_CACHE.has(o.fields.adresse!));
+
+    if (todo.length === 0) {
+      // Alle aus Cache laden
+      setCoordMap(prev => {
+        const next = new Map(prev);
+        let changed = false;
+        for (const o of withAddress) {
+          const c = GEOCODE_CACHE.get(o.fields.adresse!);
+          if (c && !next.has(o.record_id)) { next.set(o.record_id, c); changed = true; }
+        }
+        return changed ? next : prev;
+      });
+      return;
+    }
+
+    (async () => {
+      for (let i = 0; i < todo.length; i++) {
+        if (cancelled) break;
+        if (i > 0) await new Promise(r => setTimeout(r, 1200)); // Nominatim: 1 req/s
+        const o = todo[i];
+        const latlng = await geocodeAddress(o.fields.adresse!);
+        if (cancelled || !latlng) continue;
+        setCoordMap(prev => new Map(prev).set(o.record_id, latlng));
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [objekte.map(o => o.record_id).join(',')]);
+
+  const allCoords = useMemo(() => Array.from(coordMap.values()), [coordMap]);
+
+  const withoutAddress = objekte.filter(o => !o.fields.adresse);
+  const geocoding = objekte.filter(o => o.fields.adresse && !coordMap.has(o.record_id)).length > 0;
+
+  return (
+    <div className="space-y-1.5">
+      <div
+        className="rounded-xl overflow-hidden border border-border shadow-sm relative"
+        style={{ height: 340 }}
+      >
+        <MapContainer
+          center={allCoords.length > 0 ? allCoords[0] : [51.1657, 10.4515]}
+          zoom={allCoords.length === 0 ? 6 : 13}
+          style={{ width: '100%', height: '100%' }}
+          scrollWheelZoom={false}
+        >
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+          {allCoords.length > 0 && <MapFitBounds coords={allCoords} />}
+          {objekte.map(o => {
+            const latlng = coordMap.get(o.record_id);
+            if (!latlng) return null;
+            return (
+              <Marker
+                key={o.record_id}
+                position={latlng}
+                icon={createPinIcon(statusPinColor(lookupKey(o.fields.status)))}
+                eventHandlers={{ click: () => onMarkerClick(o.record_id) }}
+              />
+            );
+          })}
+        </MapContainer>
+        {geocoding && (
+          <div className="absolute bottom-2 left-2 z-[1000] bg-background/90 backdrop-blur-sm text-xs text-muted-foreground px-2 py-1 rounded-md border border-border pointer-events-none">
+            Standorte werden geladen…
+          </div>
+        )}
+      </div>
+      {/* Legende */}
+      <div className="flex items-center gap-4 px-1 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-green-600 shrink-0" />
+          <span className="text-xs text-muted-foreground">Verfügbar</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-amber-600 shrink-0" />
+          <span className="text-xs text-muted-foreground">Reserviert</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-gray-500 shrink-0" />
+          <span className="text-xs text-muted-foreground">Verkauft</span>
+        </div>
+        {withoutAddress.length > 0 && (
+          <span className="text-xs text-muted-foreground ml-auto">
+            {withoutAddress.length} Objekt{withoutAddress.length > 1 ? 'e' : ''} ohne Adresse
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DiscardConfirmDialog({ open, onClose, onConfirm }: {
+  open: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={v => !v && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Änderungen verwerfen?</DialogTitle>
+          <DialogDescription>
+            Deine nicht gespeicherten Änderungen gehen verloren.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button variant="outline" onClick={onClose}>Weiterbearbeiten</Button>
+          <Button variant="destructive" onClick={onConfirm}>Verwerfen</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
