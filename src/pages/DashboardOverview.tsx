@@ -92,6 +92,7 @@ async function geocodeAddress(addr: string): Promise<[number, number] | null> {
       `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(addr)}`,
       { headers: { 'Accept-Language': 'de', 'User-Agent': 'LivingApps-Immobilien/1.0' } }
     );
+    if (!r.ok) return null; // z.B. 429 Rate-Limit — nicht cachen, damit Retry möglich
     const data = await r.json();
     const result: [number, number] | null = data[0]
       ? [parseFloat(data[0].lat), parseFloat(data[0].lon)]
@@ -99,8 +100,7 @@ async function geocodeAddress(addr: string): Promise<[number, number] | null> {
     GEOCODE_CACHE.set(addr, result);
     return result;
   } catch {
-    GEOCODE_CACHE.set(addr, null);
-    return null;
+    return null; // Parse-Fehler nicht cachen → Retry beim nächsten Aufruf
   }
 }
 
@@ -1060,19 +1060,18 @@ function ObjekteMap({ objekte, onMarkerClick }: ObjekteMapProps) {
     const withAddress = objekte.filter(o => o.fields.adresse);
     const todo = withAddress.filter(o => !GEOCODE_CACHE.has(o.fields.adresse!));
 
-    if (todo.length === 0) {
-      // Alle aus Cache laden
-      setCoordMap(prev => {
-        const next = new Map(prev);
-        let changed = false;
-        for (const o of withAddress) {
-          const c = GEOCODE_CACHE.get(o.fields.adresse!);
-          if (c && !next.has(o.record_id)) { next.set(o.record_id, c); changed = true; }
-        }
-        return changed ? next : prev;
-      });
-      return;
-    }
+    // Immer zuerst gecachte Koordinaten laden — auch wenn noch neue geocodiert werden
+    setCoordMap(prev => {
+      const next = new Map(prev);
+      let changed = false;
+      for (const o of withAddress) {
+        const c = GEOCODE_CACHE.get(o.fields.adresse!);
+        if (c && !next.has(o.record_id)) { next.set(o.record_id, c); changed = true; }
+      }
+      return changed ? next : prev;
+    });
+
+    if (todo.length === 0) return;
 
     (async () => {
       for (let i = 0; i < todo.length; i++) {
@@ -1097,7 +1096,7 @@ function ObjekteMap({ objekte, onMarkerClick }: ObjekteMapProps) {
     <div className="space-y-1.5">
       <div
         className="rounded-xl overflow-hidden border border-border shadow-sm relative"
-        style={{ height: 340 }}
+        style={{ height: 340, isolation: 'isolate', zIndex: 0 }}
       >
         <MapContainer
           center={allCoords.length > 0 ? allCoords[0] : [51.1657, 10.4515]}
