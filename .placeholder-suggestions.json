@@ -1,0 +1,25 @@
+{
+  "InteressentenDialog.tsx": {
+    "vorname": "z. B. Max",
+    "nachname": "z. B. Mustermann",
+    "email": "z. B. max@example.com",
+    "telefon": "z. B. +49 30 123456",
+    "status": "z. B. Neu, Kontaktiert",
+    "objekt": "Welches Objekt interessiert?"
+  },
+  "ObjekteDialog.tsx": {
+    "titel": "z. B. Wohnung Prenzlauer Berg",
+    "adresse": "z. B. Straße 42, 10405 Berlin",
+    "status": "z. B. Verfügbar, Reserviert",
+    "preis": "z. B. 450000",
+    "beschreibung": "Lage, Ausstattung, Besonderheiten...",
+    "verfuegbar_ab": "Ab wann ist es frei?"
+  },
+  "BesichtigungenDialog.tsx": {
+    "titel": "z. B. Besichtigung Wohnung",
+    "termin": "Wann findet die Besichtigung statt?",
+    "objekt": "Welches Objekt wird besichtigt?",
+    "interessent": "Welcher Interessent nimmt teil?",
+    "notizen": "Eindrücke, Anmerkungen, nächste Schritte..."
+  }
+}

@@ -1,0 +1,6 @@
+- Interessenten (interessenten): vorname[string/text], nachname[string/text], email[string/email], telefon[string/tel], status[lookup/select], objekt[applookup/select]
+  → objekt links to app_id 6a33f570d897d206f67e2416
+- Objekte (objekte): titel[string/text], adresse[string/text], status[lookup/select], preis[number], fotos[file], beschreibung[string/textarea], verfuegbar_ab[date/date]
+- Besichtigungen (besichtigungen): titel[string/text], termin[date/datetimeminute], objekt[applookup/select], interessent[applookup/select], notizen[string/textarea], fotos[file]
+  → objekt links to app_id 6a33f570d897d206f67e2416
+  → interessent links to app_id 6a33f573e1f7f5947e3ad19d

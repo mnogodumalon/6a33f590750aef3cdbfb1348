@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "forms": [
+    {
+      "entity": "interessenten",
+      "app_id": "6a33f573e1f7f5947e3ad19d",
+      "path": "/rest/apps/6a33f573e1f7f5947e3ad19d/records",
+      "allowed_fields": [
+        "vorname",
+        "nachname",
+        "email",
+        "telefon",
+        "status"
+      ],
+      "pow": true,
+      "pow_difficulty": 50000,
+      "title": "Interessenten — Formular"
+    },
+    {
+      "entity": "objekte",
+      "app_id": "6a33f570d897d206f67e2416",
+      "path": "/rest/apps/6a33f570d897d206f67e2416/records",
+      "allowed_fields": [
+        "titel",
+        "adresse",
+        "status",
+        "preis",
+        "beschreibung",
+        "verfuegbar_ab"
+      ],
+      "pow": true,
+      "pow_difficulty": 50000,
+      "title": "Objekte — Formular"
+    },
+    {
+      "entity": "besichtigungen",
+      "app_id": "6a33f5740e6503911d335dc6",
+      "path": "/rest/apps/6a33f5740e6503911d335dc6/records",
+      "allowed_fields": [
+        "titel",
+        "termin",
+        "notizen"
+      ],
+      "pow": true,
+      "pow_difficulty": 50000,
+      "title": "Besichtigungen — Formular"
+    }
+  ]
+}

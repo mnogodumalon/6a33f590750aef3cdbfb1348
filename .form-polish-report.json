@@ -1,0 +1,22 @@
+{
+  "entities": {
+    "Interessenten": {
+      "placeholders_set": 6,
+      "defaults_keys": ["status"],
+      "computed_keys": [],
+      "reason": "Reine Kontaktverwaltung mit Applookup-Verknüpfung zu Objekten. Keine berechenbaren Felder, kein Datumspaar, Preis dient nur der Anzeige."
+    },
+    "Objekte": {
+      "placeholders_set": 6,
+      "defaults_keys": ["status", "verfuegbar_ab"],
+      "computed_keys": [],
+      "reason": "Reine Immobilien-Stammdaten. Preis ist statisch, kein Datumspaar (nur ab-Datum), keine Berechnungsmöglichkeiten."
+    },
+    "Besichtigungen": {
+      "placeholders_set": 5,
+      "defaults_keys": ["termin"],
+      "computed_keys": [],
+      "reason": "Zeit-Ereignis mit zwei Applookups zur Verknüpfung. Nur ein Termin-Datum (kein von/bis Paar), keine Preis-/Mengen-Felder für Berechnungen."
+    }
+  }
+}
