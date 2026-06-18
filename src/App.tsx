@@ -19,6 +19,7 @@ import PublicFormBesichtigungen from '@/pages/public/PublicForm_Besichtigungen';
 // <public:imports>
 // </public:imports>
 // <custom:imports>
+const BesichtigungVereinbarenPage = lazy(() => import('@/pages/intents/BesichtigungVereinbarenPage'));
 // </custom:imports>
 
 export default function App() {
@@ -43,6 +44,7 @@ export default function App() {
                 <Route path="besichtigungen/:id" element={<BesichtigungenDetailPage />} />
                 <Route path="admin" element={<AdminPage />} />
                 {/* <custom:routes> */}
+                <Route path="intents/besichtigung-vereinbaren" element={<Suspense fallback={null}><BesichtigungVereinbarenPage /></Suspense>} />
                 {/* </custom:routes> */}
               </Route>
             </Routes>
